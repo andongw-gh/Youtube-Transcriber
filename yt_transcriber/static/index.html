@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Transcriber</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f5f7; --card: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #e1e5ea;
+    --accent: #c4302b; --accent-text: #ffffff; --ok: #2e7d32; --err: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --card: #181b21; --text: #e6e8eb; --muted: #9aa4b2; --border: #2a2f38; --accent: #ff5a56; --ok: #66bb6a; --err: #ef5350; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 56px; }
+  header h1 { margin: 0 0 4px; font-size: 28px; }
+  header p { margin: 0 0 24px; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input[type=url], select {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  input[type=url]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 14px; }
+  button, a.button {
+    font: inherit; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); cursor: pointer; text-decoration: none; display: inline-block;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .progress { height: 8px; background: var(--border); border-radius: 999px; overflow: hidden; margin: 10px 0; }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .progress.indeterminate > div { width: 30%; animation: slide 1.2s infinite ease-in-out; }
+  @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+  .status-line { display: flex; justify-content: space-between; font-size: 15px; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); margin: 0 6px 6px 0; }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.err { color: var(--err); border-color: var(--err); }
+  .error { color: var(--err); white-space: pre-wrap; margin-top: 8px; }
+  pre.transcript {
+    white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 15px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+    max-height: 60vh; overflow: auto; margin: 12px 0 0;
+  }
+  .meta { color: var(--muted); font-size: 14px; }
+  .meta a { color: inherit; }
+  h2 { font-size: 18px; margin: 0 0 8px; }
+  table.jobs { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.jobs td { padding: 8px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  table.jobs td.title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.jobs tr { cursor: pointer; }
+  table.jobs tr:hover { background: var(--bg); }
+  .toggle { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .hidden { display: none !important; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; }
+  code { font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>YouTube Transcriber</h1>
+    <p>Paste a YouTube link and get a transcript. Chinese 中文 and English, transcribed on this computer with Whisper.</p>
+  </header>
+
+  <form id="form" class="card" autocomplete="off">
+    <label for="url">YouTube link · 视频链接</label>
+    <input id="url" type="url" required inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
+    <div class="row">
+      <div>
+        <label for="language">Spoken language · 语言</label>
+        <select id="language"></select>
+      </div>
+      <div>
+        <label for="script">Chinese output · 中文输出</label>
+        <select id="script"></select>
+      </div>
+      <div>
+        <label for="model">Whisper model · 模型</label>
+        <select id="model"></select>
+        <div class="hint" id="model-hint"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" type="submit" id="submit">Transcribe</button>
+      <span class="hint" id="device-hint"></span>
+    </div>
+  </form>
+
+  <section id="status" class="card hidden">
+    <div class="status-line"><strong id="status-stage">Queued</strong><span id="status-pct"></span></div>
+    <div class="progress" id="progress"><div id="progress-bar"></div></div>
+    <div class="meta" id="status-message"></div>
+    <div class="error hidden" id="status-error"></div>
+    <div class="actions"><button type="button" id="cancel">Cancel</button></div>
+  </section>
+
+  <section id="result" class="card hidden">
+    <h2 id="result-title"></h2>
+    <div class="meta" id="result-meta"></div>
+    <div class="actions">
+      <button type="button" id="copy">Copy text</button>
+      <a class="button" id="dl-txt" download>.txt</a>
+      <a class="button" id="dl-srt" download>.srt</a>
+      <a class="button" id="dl-vtt" download>.vtt</a>
+      <a class="button" id="dl-json" download>.json</a>
+      <label class="toggle"><input type="checkbox" id="timestamps"> Show timestamps</label>
+    </div>
+    <pre class="transcript" id="transcript"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Recent</h2>
+    <table class="jobs"><tbody id="jobs"></tbody></table>
+    <div class="hint" id="jobs-empty">Nothing yet. Finished transcripts are also saved as files in <code id="output-dir">transcripts</code>.</div>
+  </section>
+
+  <footer>Everything runs locally. The Whisper model is downloaded the first time it is used.</footer>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const FINISHED = new Set(['done', 'error', 'cancelled']);
+  const LANG_NAMES = { zh: 'Chinese 中文', en: 'English', yue: 'Cantonese 粤语', ja: 'Japanese', ko: 'Korean' };
+  const PREFS_KEY = 'yt-transcriber-prefs';
+  const state = { config: null, jobId: null, job: null, pollTimer: null, listTimer: null };
+
+  async function api(path, options) {
+    const res = await fetch(path, options);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        if (body && body.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+      } catch (_) { /* not JSON */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  }
+
+  function fillSelect(select, items, selected) {
+    select.innerHTML = '';
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = item.value;
+      option.textContent = item.label;
+      if (item.value === selected) option.selected = true;
+      select.appendChild(option);
+    }
+  }
+
+  function clock(seconds) {
+    const total = Math.max(0, Math.floor(seconds || 0));
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+    const mm = String(m).padStart(2, '0'), ss = String(s).padStart(2, '0');
+    return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+  }
+
+  function stageLabel(job) {
+    if (job.status === 'error') return 'Failed';
+    if (job.status === 'cancelled') return 'Cancelled';
+    if (job.status === 'done') return 'Done';
+    const stages = (state.config && state.config.stages) || {};
+    return stages[job.stage] || job.stage;
+  }
+
+  function badge(text, cls) {
+    const span = document.createElement('span');
+    span.className = 'badge' + (cls ? ' ' + cls : '');
+    span.textContent = text;
+    return span;
+  }
+
+  function loadPrefs() {
+    try { return JSON.parse(localStorage.getItem(PREFS_KEY) || 'null') || {}; } catch (_) { return {}; }
+  }
+  function savePrefs(prefs) {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (_) { /* ignore */ }
+  }
+
+  function updateModelHint() {
+    const model = state.config.models.find((m) => m.name === $('model').value);
+    $('model-hint').textContent = model ? model.description : '';
+  }
+
+  async function loadConfig() {
+    const cfg = await api('/api/config');
+    state.config = cfg;
+    const prefs = loadPrefs();
+    fillSelect($('language'), cfg.languages, prefs.language || 'auto');
+    fillSelect($('script'), cfg.chinese_scripts, prefs.chinese_script || 'keep');
+    const models = cfg.models.map((m) => ({ value: m.name, label: m.name }));
+    const wanted = models.some((m) => m.value === prefs.model) ? prefs.model : cfg.default_model;
+    fillSelect($('model'), models, wanted);
+    updateModelHint();
+    $('device-hint').textContent = cfg.device === 'cuda'
+      ? 'GPU detected: large models are fine.'
+      : 'Running on CPU: smaller models are much faster.';
+    $('output-dir').textContent = cfg.output_dir;
+  }
+
+  function showError(message) {
+    $('status').classList.remove('hidden');
+    $('result').classList.add('hidden');
+    $('status-stage').textContent = 'Error';
+    $('status-pct').textContent = '';
+    $('progress').classList.add('hidden');
+    $('status-message').textContent = '';
+    $('status-error').textContent = message;
+    $('status-error').classList.remove('hidden');
+    $('cancel').classList.add('hidden');
+  }
+
+  function watch(jobId) {
+    state.jobId = jobId;
+    if (state.pollTimer) clearTimeout(state.pollTimer);
+    poll();
+  }
+
+  async function poll() {
+    if (!state.jobId) return;
+    const jobId = state.jobId;
+    try {
+      const job = await api(`/api/jobs/${jobId}`);
+      if (state.jobId !== jobId) return; // user switched to another job meanwhile
+      render(job);
+      if (!FINISHED.has(job.status)) {
+        state.pollTimer = setTimeout(poll, 1000);
+      } else {
+        refreshJobs();
+      }
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  function render(job) {
+    state.job = job;
+    const finished = FINISHED.has(job.status);
+    $('status').classList.remove('hidden');
+    $('status-stage').textContent = stageLabel(job);
+    const bar = $('progress');
+    if (finished) {
+      bar.classList.add('hidden');
+      $('status-pct').textContent = '';
+    } else {
+      bar.classList.remove('hidden');
+      if (job.progress === null || job.progress === undefined) {
+        bar.classList.add('indeterminate');
+        $('status-pct').textContent = '';
+      } else {
+        bar.classList.remove('indeterminate');
+        const pct = Math.round(job.progress * 100);
+        $('progress-bar').style.width = pct + '%';
+        $('status-pct').textContent = pct + '%';
+      }
+    }
+    $('status-message').textContent = job.status === 'done' ? '' : (job.message || '');
+    $('status-error').textContent = job.error || '';
+    $('status-error').classList.toggle('hidden', !job.error);
+    $('cancel').classList.toggle('hidden', finished);
+
+    if (job.status === 'done' && job.result) {
+      $('status').classList.add('hidden');
+      renderResult(job);
+    } else {
+      $('result').classList.add('hidden');
+    }
+  }
+
+  function renderResult(job) {
+    const r = job.result;
+    $('result').classList.remove('hidden');
+    $('result-title').textContent = r.title;
+
+    const meta = $('result-meta');
+    meta.innerHTML = '';
+    const langName = LANG_NAMES[r.language] || r.language;
+    const prob = r.language_probability ? ` · ${Math.round(r.language_probability * 100)}%` : '';
+    meta.appendChild(badge(`${langName}${prob}`, 'ok'));
+    meta.appendChild(badge(clock(r.duration)));
+    meta.appendChild(badge(`model: ${r.model}`));
+    if (r.uploader) meta.appendChild(badge(r.uploader));
+    const link = document.createElement('a');
+    link.href = r.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Open video';
+    meta.appendChild(link);
+
+    for (const fmt of ['txt', 'srt', 'vtt', 'json']) {
+      $(`dl-${fmt}`).href = `/api/jobs/${job.id}/download?format=${fmt}`;
+    }
+    renderTranscript();
+  }
+
+  function renderTranscript() {
+    const r = state.job && state.job.result;
+    if (!r) return;
+    $('transcript').textContent = $('timestamps').checked
+      ? r.segments.map((s) => `[${clock(s.start)}] ${s.text}`).join('\n')
+      : r.text;
+  }
+
+  function flash(button, text) {
+    const original = button.textContent;
+    button.textContent = text;
+    setTimeout(() => { button.textContent = original; }, 1500);
+  }
+
+  async function refreshJobs() {
+    let jobs;
+    try { jobs = await api('/api/jobs'); } catch (_) { return; }
+    const tbody = $('jobs');
+    tbody.innerHTML = '';
+    $('jobs-empty').classList.toggle('hidden', jobs.length > 0);
+    for (const job of jobs) {
+      const tr = document.createElement('tr');
+      const statusCell = document.createElement('td');
+      const cls = job.status === 'done' ? 'ok' : (job.status === 'error' ? 'err' : '');
+      statusCell.appendChild(badge(stageLabel(job), cls));
+      const titleCell = document.createElement('td');
+      titleCell.className = 'title';
+      titleCell.textContent = job.title || job.url;
+      titleCell.title = job.url;
+      const infoCell = document.createElement('td');
+      const bits = [];
+      if (job.language) bits.push(LANG_NAMES[job.language] || job.language);
+      if (job.duration) bits.push(clock(job.duration));
+      if (job.options && job.options.model) bits.push(job.options.model);
+      infoCell.textContent = bits.join(' · ');
+      infoCell.className = 'meta';
+      const timeCell = document.createElement('td');
+      timeCell.className = 'meta';
+      timeCell.textContent = new Date(job.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      tr.append(statusCell, titleCell, infoCell, timeCell);
+      tr.addEventListener('click', () => watch(job.id));
+      tbody.appendChild(tr);
+    }
+    const active = jobs.some((j) => !FINISHED.has(j.status));
+    if (state.listTimer) clearTimeout(state.listTimer);
+    if (active) state.listTimer = setTimeout(refreshJobs, 3000);
+  }
+
+  $('model').addEventListener('change', updateModelHint);
+  $('timestamps').addEventListener('change', renderTranscript);
+
+  $('form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = {
+      url: $('url').value.trim(),
+      language: $('language').value,
+      chinese_script: $('script').value,
+      model: $('model').value,
+    };
+    savePrefs({ language: payload.language, chinese_script: payload.chinese_script, model: payload.model });
+    $('submit').disabled = true;
+    try {
+      const job = await api('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      $('url').value = '';
+      watch(job.id);
+      refreshJobs();
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      $('submit').disabled = false;
+    }
+  });
+
+  $('cancel').addEventListener('click', async () => {
+    if (!state.jobId) return;
+    try { await api(`/api/jobs/${state.jobId}/cancel`, { method: 'POST' }); } catch (err) { showError(err.message); }
+  });
+
+  $('copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('transcript').textContent);
+      flash($('copy'), 'Copied!');
+    } catch (_) {
+      flash($('copy'), 'Copy failed');
+    }
+  });
+
+  loadConfig().then(refreshJobs).catch((err) => showError(`Could not reach the app: ${err.message}`));
+})();
+</script>
+</body>
+</html>

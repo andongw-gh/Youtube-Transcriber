@@ -1,0 +1,8 @@
+# Runtime dependencies (same as pyproject.toml); `pip install -e .` is the preferred install.
+yt-dlp>=2025.1.0
+faster-whisper>=1.1.0
+av>=11,<16
+numpy>=1.24
+zhconv>=1.4.3
+fastapi>=0.110
+uvicorn>=0.27

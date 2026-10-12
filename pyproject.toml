@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yt-transcriber"
+version = "0.1.0"
+description = "Transcribe YouTube videos (Chinese / English) locally with Whisper, from a pasted link."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "yt-dlp>=2025.1.0",
+  "faster-whisper>=1.1.0",
+  "av>=11,<16",
+  "numpy>=1.24",
+  "zhconv>=1.4.3",
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "httpx>=0.27"]
+
+[project.scripts]
+yt-transcriber = "yt_transcriber.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["yt_transcriber*"]
+
+[tool.setuptools.package-data]
+yt_transcriber = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
