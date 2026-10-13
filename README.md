@@ -36,6 +36,13 @@ run.bat           # Windows (double-click works too)
 The first run creates a virtual environment and installs the dependencies, then opens
 <http://127.0.0.1:8000> in your browser. Paste a link and press **Transcribe**.
 
+No git? Use the green **Code → Download ZIP** button on GitHub and extract the folder
+instead of cloning.
+
+On Windows, if the folder lives inside OneDrive, the Python environment is created in
+`%LOCALAPPDATA%\yt-transcriber\venv` rather than next to the code, so OneDrive does not
+try to sync thousands of library files. Transcripts still land in the app folder.
+
 The first transcription with a given model downloads that model (about 500 MB for
 `small`, 1.5 GB for `medium`, 3 GB for `large-v3`). Later runs reuse the cached copy.
 
@@ -133,6 +140,10 @@ of auto-detecting, or use a GPU.
 
 **Repeated or hallucinated lines** – Whisper sometimes loops on silence or music. The
 app already filters silence with VAD; trying a larger model usually fixes the rest.
+
+**The window closes at once (Windows)** – `run.bat` pauses and shows the reason when
+something fails. If it still vanishes, open PowerShell in the folder and run `.\run.bat`
+to read the message. The usual cause is Python not being installed or not on PATH.
 
 **ffmpeg not found** – Install it (see Requirements). Without it the app falls back to a
 built-in decoder that handles most but not all files.
