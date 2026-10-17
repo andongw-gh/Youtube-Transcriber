@@ -21,11 +21,15 @@ StageProgress = Callable[[str, "float | None", str], None]
 STAGES = ("download", "decode", "load_model", "transcribe", "done")
 STAGE_LABELS = {
     "queued": "Queued",
+    "resolve": "Fetching info",
     "download": "Downloading",
+    "convert": "Converting",
     "decode": "Decoding",
     "load_model": "Loading model",
     "transcribe": "Transcribing",
     "done": "Done",
+    "error": "Failed",
+    "cancelled": "Cancelled",
 }
 
 
@@ -95,6 +99,10 @@ class Transcript:
             "language_probability": round(self.language_probability, 4),
             "model": self.model,
         }
+
+    def summary(self) -> dict[str, Any]:
+        """Light fields shown in job listings."""
+        return {"language": self.language, "duration": round(self.duration, 3)}
 
     def to_dict(self) -> dict[str, Any]:
         data = self.metadata()

@@ -13,16 +13,20 @@ from .formats import FORMATS, output_basename, write_outputs
 from .pipeline import STAGE_LABELS, TranscribeOptions
 from .pipeline import run as run_pipeline
 from .transcriber import DEVICE_CHOICES, LANGUAGE_CHOICES, MODEL_CHOICES
+from .urls import parse_link
+from .video_downloader import AUDIO_FORMAT_CHOICES, QUALITY_CHOICES, DownloadOptions, human_size
+from .video_downloader import run as run_download
 from .zh import SCRIPT_CHOICES
 
-COMMANDS = ("transcribe", "serve")
+COMMANDS = ("transcribe", "download", "serve")
 
 
 def build_parser(settings: Settings | None = None) -> argparse.ArgumentParser:
     settings = settings or Settings.from_env()
     parser = argparse.ArgumentParser(
         prog="yt-transcriber",
-        description="Transcribe YouTube videos (Chinese / English) locally with Whisper.",
+        description="Download YouTube videos and playlists, or transcribe them (Chinese / English) "
+        "locally with Whisper.",
         epilog="Run with no arguments to start the web app. "
         "A bare URL is a shortcut for `transcribe URL`.",
     )
@@ -57,6 +61,24 @@ def build_parser(settings: Settings | None = None) -> argparse.ArgumentParser:
     tr.add_argument("-p", "--print", dest="print_text", action="store_true",
                     help="Also print the transcript to stdout")
     tr.set_defaults(func=cmd_transcribe)
+
+    dl = sub.add_parser("download", parents=[common],
+                        help="Download videos or whole playlists, as MP4 video or audio only")
+    dl.add_argument("urls", nargs="+", metavar="URL", help="YouTube video or playlist link(s)")
+    dl.add_argument("-a", "--audio", action="store_true", help="Audio only (MP3 by default)")
+    dl.add_argument("--audio-format", choices=AUDIO_FORMAT_CHOICES, default="mp3",
+                    help="Audio-only container (default: mp3)")
+    dl.add_argument("-q", "--quality", choices=QUALITY_CHOICES, default="1080",
+                    help="Maximum video resolution (default: 1080)")
+    dl.add_argument("--playlist", action="store_true",
+                    help="When a video link also carries a playlist id, download the whole playlist")
+    dl.add_argument("-o", "--output-dir", type=Path, default=settings.download_dir,
+                    help=f"Where to save files (default: {settings.download_dir})")
+    dl.add_argument("--cookies-from-browser", default=settings.cookies_from_browser, metavar="BROWSER",
+                    help="Use cookies from chrome/firefox/edge/safari when YouTube asks you to sign in")
+    dl.add_argument("--cookies-file", default=settings.cookies_file, metavar="FILE",
+                    help="Netscape-format cookies file for yt-dlp")
+    dl.set_defaults(func=cmd_download)
 
     sv = sub.add_parser("serve", parents=[common], help="Start the local web app (default command)")
     sv.add_argument("--host", default=settings.host, help=f"Bind address (default: {settings.host})")
@@ -157,6 +179,54 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
             print()
             print(transcript.text)
             print()
+    return 1 if failures else 0
+
+
+def cmd_download(args: argparse.Namespace) -> int:
+    options = DownloadOptions(
+        mode="audio" if args.audio else "video",
+        quality=args.quality,
+        audio_format=args.audio_format,
+        output_dir=str(args.output_dir),
+        cookies_from_browser=args.cookies_from_browser,
+        cookies_file=args.cookies_file,
+    )
+    failures = 0
+    for url in args.urls:
+        print(f"▶ {url}")
+        link = parse_link(url)
+        if link is None:
+            print("✖ Not a YouTube video or playlist link.", file=sys.stderr)
+            failures += 1
+            continue
+        target = link.target_url(whole_playlist=args.playlist)
+        if link.kind == "video_in_playlist" and not args.playlist:
+            print("  (link is part of a playlist; add --playlist to download all of it)")
+        progress = ConsoleProgress()
+        try:
+            result = run_download(target, options, progress=progress)
+        except KeyboardInterrupt:
+            progress.finish()
+            print("Interrupted.", file=sys.stderr)
+            return 130
+        except Exception as exc:  # noqa: BLE001 - report and continue with the next URL
+            progress.finish()
+            print(f"✖ Failed: {exc}", file=sys.stderr)
+            if args.verbose:
+                logging.getLogger(__name__).exception("Download failed for %s", url)
+            failures += 1
+            continue
+        progress.finish()
+        print(f"✔ {result.title}")
+        print(f"  {len(result.items)} file(s), {human_size(result.total_bytes)}  →  {result.output_dir}")
+        for item in result.items:
+            print(f"  saved: {Path(item.path).name}")
+        for failure in result.failures:
+            print(f"  ✖ {failure.splitlines()[0]}", file=sys.stderr)
+        for warning in result.warnings:
+            print(f"  note: {warning}")
+        if result.failures:
+            failures += 1
     return 1 if failures else 0
 
 

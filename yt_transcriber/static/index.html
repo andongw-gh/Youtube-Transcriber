@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>YouTube Transcriber</title>
+<title>YouTube Download &amp; Transcribe</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -20,7 +20,10 @@
   }
   main { max-width: 880px; margin: 0 auto; padding: 32px 16px 56px; }
   header h1 { margin: 0 0 4px; font-size: 28px; }
-  header p { margin: 0 0 24px; color: var(--muted); }
+  header p { margin: 0 0 20px; color: var(--muted); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tabs button { border-radius: 999px; padding: 8px 18px; }
+  .tabs button.active { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
   input[type=url], select {
@@ -45,6 +48,7 @@
   .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); margin: 0 6px 6px 0; }
   .badge.ok { color: var(--ok); border-color: var(--ok); }
   .badge.err { color: var(--err); border-color: var(--err); }
+  .badge.kind { background: var(--bg); }
   .error { color: var(--err); white-space: pre-wrap; margin-top: 8px; }
   pre.transcript {
     white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 15px;
@@ -54,12 +58,15 @@
   .meta { color: var(--muted); font-size: 14px; }
   .meta a { color: inherit; }
   h2 { font-size: 18px; margin: 0 0 8px; }
-  table.jobs { width: 100%; border-collapse: collapse; font-size: 14px; }
-  table.jobs td { padding: 8px 6px; border-top: 1px solid var(--border); vertical-align: top; }
-  table.jobs td.title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.list { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.list td { padding: 8px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  table.list td.title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.list td.num { color: var(--muted); white-space: nowrap; text-align: right; }
   table.jobs tr { cursor: pointer; }
   table.jobs tr:hover { background: var(--bg); }
-  .toggle { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .toggle { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .toggle.right { margin-left: auto; }
+  code.path { font-size: 12px; color: var(--muted); word-break: break-all; }
   .hidden { display: none !important; }
   footer { color: var(--muted); font-size: 12px; text-align: center; }
   code { font-size: 12px; }
@@ -68,12 +75,17 @@
 <body>
 <main>
   <header>
-    <h1>YouTube Transcriber</h1>
-    <p>Paste a YouTube link and get a transcript. Chinese 中文 and English, transcribed on this computer with Whisper.</p>
+    <h1>YouTube Download &amp; Transcribe</h1>
+    <p>Paste a YouTube link. Download the video or audio, or transcribe it (Chinese 中文 / English) on this computer with Whisper.</p>
   </header>
 
-  <form id="form" class="card" autocomplete="off">
-    <label for="url">YouTube link · 视频链接</label>
+  <nav class="tabs" id="tabs">
+    <button type="button" data-tab="transcribe" class="active">Transcribe · 转写</button>
+    <button type="button" data-tab="download">Download · 下载</button>
+  </nav>
+
+  <form id="form" class="card panel" data-panel="transcribe" autocomplete="off">
+    <label for="url">YouTube video link · 视频链接</label>
     <input id="url" type="url" required inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
     <div class="row">
       <div>
@@ -96,6 +108,31 @@
     </div>
   </form>
 
+  <form id="form-download" class="card panel hidden" data-panel="download" autocomplete="off">
+    <label for="dl-url">YouTube video or playlist link · 视频或播放列表链接</label>
+    <input id="dl-url" type="url" required inputmode="url" placeholder="https://www.youtube.com/watch?v=…   or   https://www.youtube.com/playlist?list=…">
+    <div class="hint" id="dl-link-hint"></div>
+    <div class="row">
+      <div>
+        <label for="dl-mode">Download as · 下载格式</label>
+        <select id="dl-mode"></select>
+      </div>
+      <div id="dl-quality-wrap">
+        <label for="dl-quality">Max resolution · 最高画质</label>
+        <select id="dl-quality"></select>
+      </div>
+      <div id="dl-audio-wrap" class="hidden">
+        <label for="dl-audio-format">Audio format · 音频格式</label>
+        <select id="dl-audio-format"></select>
+      </div>
+    </div>
+    <label class="toggle" style="margin-top: 14px"><input type="checkbox" id="dl-playlist"> Download the whole playlist when the link belongs to one · 下载整个播放列表</label>
+    <div class="actions">
+      <button class="primary" type="submit" id="dl-submit">Download</button>
+      <span class="hint" id="ffmpeg-hint"></span>
+    </div>
+  </form>
+
   <section id="status" class="card hidden">
     <div class="status-line"><strong id="status-stage">Queued</strong><span id="status-pct"></span></div>
     <div class="progress" id="progress"><div id="progress-bar"></div></div>
@@ -113,15 +150,27 @@
       <a class="button" id="dl-srt" download>.srt</a>
       <a class="button" id="dl-vtt" download>.vtt</a>
       <a class="button" id="dl-json" download>.json</a>
-      <label class="toggle"><input type="checkbox" id="timestamps"> Show timestamps</label>
+      <label class="toggle right"><input type="checkbox" id="timestamps"> Show timestamps</label>
     </div>
     <pre class="transcript" id="transcript"></pre>
   </section>
 
+  <section id="result-download" class="card hidden">
+    <h2 id="dlr-title"></h2>
+    <div class="meta" id="dlr-meta"></div>
+    <div class="actions">
+      <button type="button" id="open-folder">Open folder</button>
+      <code class="path" id="dlr-folder"></code>
+    </div>
+    <table class="list"><tbody id="dlr-files"></tbody></table>
+    <div class="error hidden" id="dlr-failures"></div>
+    <div class="hint hidden" id="dlr-warnings"></div>
+  </section>
+
   <section class="card">
     <h2>Recent</h2>
-    <table class="jobs"><tbody id="jobs"></tbody></table>
-    <div class="hint" id="jobs-empty">Nothing yet. Finished transcripts are also saved as files in <code id="output-dir">transcripts</code>.</div>
+    <table class="list jobs"><tbody id="jobs"></tbody></table>
+    <div class="hint" id="jobs-empty">Nothing yet. Transcripts are saved in <code id="output-dir">transcripts</code>, videos in <code id="download-dir">downloads</code>.</div>
   </section>
 
   <footer>Everything runs locally. The Whisper model is downloaded the first time it is used.</footer>
@@ -132,7 +181,10 @@
   const $ = (id) => document.getElementById(id);
   const FINISHED = new Set(['done', 'error', 'cancelled']);
   const LANG_NAMES = { zh: 'Chinese 中文', en: 'English', yue: 'Cantonese 粤语', ja: 'Japanese', ko: 'Korean' };
+  const KIND_NAMES = { transcribe: 'Transcribe', download: 'Download' };
   const PREFS_KEY = 'yt-transcriber-prefs';
+  const DL_PREFS_KEY = 'yt-transcriber-dl-prefs';
+  const TAB_KEY = 'yt-transcriber-tab';
   const state = { config: null, jobId: null, job: null, pollTimer: null, listTimer: null };
 
   async function api(path, options) {
@@ -166,6 +218,15 @@
     return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
   }
 
+  function humanSize(bytes) {
+    let size = Number(bytes) || 0;
+    for (const unit of ['B', 'KB', 'MB', 'GB', 'TB']) {
+      if (size < 1024 || unit === 'TB') return unit === 'B' ? `${Math.round(size)} B` : `${size.toFixed(1)} ${unit}`;
+      size /= 1024;
+    }
+    return '';
+  }
+
   function stageLabel(job) {
     if (job.status === 'error') return 'Failed';
     if (job.status === 'cancelled') return 'Cancelled';
@@ -181,22 +242,57 @@
     return span;
   }
 
-  function loadPrefs() {
-    try { return JSON.parse(localStorage.getItem(PREFS_KEY) || 'null') || {}; } catch (_) { return {}; }
+  function loadJSON(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null') || {}; } catch (_) { return {}; }
   }
-  function savePrefs(prefs) {
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (_) { /* ignore */ }
+  function saveJSON(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* ignore */ }
   }
 
+  // ---- tabs -----------------------------------------------------------------
+  function setTab(name) {
+    for (const button of $('tabs').querySelectorAll('button')) {
+      button.classList.toggle('active', button.dataset.tab === name);
+    }
+    for (const panel of document.querySelectorAll('.panel')) {
+      panel.classList.toggle('hidden', panel.dataset.panel !== name);
+    }
+    try { localStorage.setItem(TAB_KEY, name); } catch (_) { /* ignore */ }
+  }
+  $('tabs').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-tab]');
+    if (button) setTab(button.dataset.tab);
+  });
+
+  // ---- config ---------------------------------------------------------------
   function updateModelHint() {
     const model = state.config.models.find((m) => m.name === $('model').value);
     $('model-hint').textContent = model ? model.description : '';
   }
 
+  function updateModeFields() {
+    const audio = $('dl-mode').value === 'audio';
+    $('dl-quality-wrap').classList.toggle('hidden', audio);
+    $('dl-audio-wrap').classList.toggle('hidden', !audio);
+  }
+
+  function updateLinkHint() {
+    const value = $('dl-url').value.trim();
+    let hint = '';
+    try {
+      const url = new URL(value.includes('://') ? value : 'https://' + value);
+      const hasList = url.searchParams.has('list');
+      const hasVideo = url.searchParams.has('v') || url.hostname.endsWith('youtu.be') || /\/(shorts|live|embed)\//.test(url.pathname);
+      if (hasList && hasVideo) hint = 'This link is inside a playlist. Tick the box below to download every video in it.';
+      else if (hasList) hint = 'Playlist link: every video in the playlist will be downloaded.';
+    } catch (_) { /* incomplete URL while typing */ }
+    $('dl-link-hint').textContent = hint;
+  }
+
   async function loadConfig() {
     const cfg = await api('/api/config');
     state.config = cfg;
-    const prefs = loadPrefs();
+    const prefs = loadJSON(PREFS_KEY);
     fillSelect($('language'), cfg.languages, prefs.language || 'auto');
     fillSelect($('script'), cfg.chinese_scripts, prefs.chinese_script || 'keep');
     const models = cfg.models.map((m) => ({ value: m.name, label: m.name }));
@@ -206,12 +302,29 @@
     $('device-hint').textContent = cfg.device === 'cuda'
       ? 'GPU detected: large models are fine.'
       : 'Running on CPU: smaller models are much faster.';
+
+    const dl = loadJSON(DL_PREFS_KEY);
+    fillSelect($('dl-mode'), cfg.modes, dl.mode || 'video');
+    fillSelect($('dl-quality'), cfg.qualities, dl.quality || '1080');
+    fillSelect($('dl-audio-format'), cfg.audio_formats, dl.audio_format || 'mp3');
+    $('dl-playlist').checked = Boolean(dl.playlist);
+    updateModeFields();
+    $('ffmpeg-hint').textContent = cfg.ffmpeg
+      ? ''
+      : 'ffmpeg not found: video is limited to 720p and audio stays M4A. Install ffmpeg for full quality.';
+
     $('output-dir').textContent = cfg.output_dir;
+    $('download-dir').textContent = cfg.download_dir;
+    let tab = 'transcribe';
+    try { tab = localStorage.getItem(TAB_KEY) || tab; } catch (_) { /* ignore */ }
+    setTab(tab === 'download' ? 'download' : 'transcribe');
   }
 
+  // ---- job status -----------------------------------------------------------
   function showError(message) {
     $('status').classList.remove('hidden');
     $('result').classList.add('hidden');
+    $('result-download').classList.add('hidden');
     $('status-stage').textContent = 'Error';
     $('status-pct').textContent = '';
     $('progress').classList.add('hidden');
@@ -248,7 +361,7 @@
     state.job = job;
     const finished = FINISHED.has(job.status);
     $('status').classList.remove('hidden');
-    $('status-stage').textContent = stageLabel(job);
+    $('status-stage').textContent = `${KIND_NAMES[job.kind] || job.kind}: ${stageLabel(job)}`;
     const bar = $('progress');
     if (finished) {
       bar.classList.add('hidden');
@@ -270,11 +383,11 @@
     $('status-error').classList.toggle('hidden', !job.error);
     $('cancel').classList.toggle('hidden', finished);
 
+    $('result').classList.add('hidden');
+    $('result-download').classList.add('hidden');
     if (job.status === 'done' && job.result) {
       $('status').classList.add('hidden');
-      renderResult(job);
-    } else {
-      $('result').classList.add('hidden');
+      if (job.kind === 'download') renderDownloadResult(job); else renderResult(job);
     }
   }
 
@@ -303,10 +416,45 @@
 
   function renderTranscript() {
     const r = state.job && state.job.result;
-    if (!r) return;
+    if (!r || state.job.kind !== 'transcribe') return;
     $('transcript').textContent = $('timestamps').checked
       ? r.segments.map((s) => `[${clock(s.start)}] ${s.text}`).join('\n')
       : r.text;
+  }
+
+  function renderDownloadResult(job) {
+    const r = job.result;
+    $('result-download').classList.remove('hidden');
+    $('dlr-title').textContent = r.title;
+
+    const meta = $('dlr-meta');
+    meta.innerHTML = '';
+    const count = r.items.length;
+    meta.appendChild(badge(`${count} file${count === 1 ? '' : 's'} · ${humanSize(r.total_bytes)}`, 'ok'));
+    if (r.kind === 'playlist') {
+      meta.appendChild(badge(r.expected_count ? `playlist · ${r.expected_count} videos` : 'playlist'));
+    }
+    meta.appendChild(badge(r.mode === 'audio' ? `audio · ${r.audio_format.toUpperCase()}` : (r.quality === 'best' ? 'video · best quality' : `video · up to ${r.quality}p`)));
+    if (r.failures.length) meta.appendChild(badge(`${r.failures.length} failed`, 'err'));
+    const link = document.createElement('a');
+    link.href = r.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Open on YouTube';
+    meta.appendChild(link);
+
+    $('dlr-folder').textContent = r.output_dir;
+    const tbody = $('dlr-files');
+    tbody.innerHTML = '';
+    for (const item of r.items) {
+      const tr = document.createElement('tr');
+      const idx = document.createElement('td'); idx.className = 'num'; idx.textContent = item.index ? String(item.index) : '';
+      const name = document.createElement('td'); name.className = 'title'; name.textContent = item.filename; name.title = item.path;
+      const size = document.createElement('td'); size.className = 'num'; size.textContent = humanSize(item.size_bytes);
+      tr.append(idx, name, size);
+      tbody.appendChild(tr);
+    }
+    $('dlr-failures').textContent = r.failures.map((f) => `✖ ${f}`).join('\n');
+    $('dlr-failures').classList.toggle('hidden', r.failures.length === 0);
+    $('dlr-warnings').textContent = r.warnings.join('\n');
+    $('dlr-warnings').classList.toggle('hidden', r.warnings.length === 0);
   }
 
   function flash(button, text) {
@@ -315,6 +463,7 @@
     setTimeout(() => { button.textContent = original; }, 1500);
   }
 
+  // ---- recent list ----------------------------------------------------------
   async function refreshJobs() {
     let jobs;
     try { jobs = await api('/api/jobs'); } catch (_) { return; }
@@ -323,6 +472,8 @@
     $('jobs-empty').classList.toggle('hidden', jobs.length > 0);
     for (const job of jobs) {
       const tr = document.createElement('tr');
+      const kindCell = document.createElement('td');
+      kindCell.appendChild(badge(KIND_NAMES[job.kind] || job.kind, 'kind'));
       const statusCell = document.createElement('td');
       const cls = job.status === 'done' ? 'ok' : (job.status === 'error' ? 'err' : '');
       statusCell.appendChild(badge(stageLabel(job), cls));
@@ -332,16 +483,22 @@
       titleCell.title = job.url;
       const infoCell = document.createElement('td');
       const bits = [];
-      if (job.language) bits.push(LANG_NAMES[job.language] || job.language);
-      if (job.duration) bits.push(clock(job.duration));
-      if (job.options && job.options.model) bits.push(job.options.model);
+      if (job.kind === 'download') {
+        if (job.item_count !== undefined) bits.push(`${job.item_count} file${job.item_count === 1 ? '' : 's'}`);
+        if (job.total_bytes) bits.push(humanSize(job.total_bytes));
+        if (job.options) bits.push(job.options.mode === 'audio' ? job.options.audio_format.toUpperCase() : (job.options.quality === 'best' ? 'best' : `${job.options.quality}p`));
+      } else {
+        if (job.language) bits.push(LANG_NAMES[job.language] || job.language);
+        if (job.duration) bits.push(clock(job.duration));
+        if (job.options && job.options.model) bits.push(job.options.model);
+      }
       infoCell.textContent = bits.join(' · ');
       infoCell.className = 'meta';
       const timeCell = document.createElement('td');
       timeCell.className = 'meta';
       timeCell.textContent = new Date(job.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      tr.append(statusCell, titleCell, infoCell, timeCell);
-      tr.addEventListener('click', () => watch(job.id));
+      tr.append(kindCell, statusCell, titleCell, infoCell, timeCell);
+      tr.addEventListener('click', () => { setTab(job.kind === 'download' ? 'download' : 'transcribe'); watch(job.id); });
       tbody.appendChild(tr);
     }
     const active = jobs.some((j) => !FINISHED.has(j.status));
@@ -349,8 +506,11 @@
     if (active) state.listTimer = setTimeout(refreshJobs, 3000);
   }
 
+  // ---- events ---------------------------------------------------------------
   $('model').addEventListener('change', updateModelHint);
   $('timestamps').addEventListener('change', renderTranscript);
+  $('dl-mode').addEventListener('change', updateModeFields);
+  $('dl-url').addEventListener('input', updateLinkHint);
 
   $('form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -360,7 +520,7 @@
       chinese_script: $('script').value,
       model: $('model').value,
     };
-    savePrefs({ language: payload.language, chinese_script: payload.chinese_script, model: payload.model });
+    saveJSON(PREFS_KEY, { language: payload.language, chinese_script: payload.chinese_script, model: payload.model });
     $('submit').disabled = true;
     try {
       const job = await api('/api/jobs', {
@@ -378,6 +538,34 @@
     }
   });
 
+  $('form-download').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = {
+      url: $('dl-url').value.trim(),
+      mode: $('dl-mode').value,
+      quality: $('dl-quality').value,
+      audio_format: $('dl-audio-format').value,
+      playlist: $('dl-playlist').checked,
+    };
+    saveJSON(DL_PREFS_KEY, { mode: payload.mode, quality: payload.quality, audio_format: payload.audio_format, playlist: payload.playlist });
+    $('dl-submit').disabled = true;
+    try {
+      const job = await api('/api/downloads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      $('dl-url').value = '';
+      updateLinkHint();
+      watch(job.id);
+      refreshJobs();
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      $('dl-submit').disabled = false;
+    }
+  });
+
   $('cancel').addEventListener('click', async () => {
     if (!state.jobId) return;
     try { await api(`/api/jobs/${state.jobId}/cancel`, { method: 'POST' }); } catch (err) { showError(err.message); }
@@ -389,6 +577,16 @@
       flash($('copy'), 'Copied!');
     } catch (_) {
       flash($('copy'), 'Copy failed');
+    }
+  });
+
+  $('open-folder').addEventListener('click', async () => {
+    if (!state.jobId) return;
+    try {
+      await api(`/api/jobs/${state.jobId}/open-folder`, { method: 'POST' });
+      flash($('open-folder'), 'Opened');
+    } catch (err) {
+      flash($('open-folder'), err.message);
     }
   });
 

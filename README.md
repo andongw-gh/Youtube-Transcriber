@@ -1,19 +1,24 @@
-# YouTube Transcriber
+# YouTube Download & Transcribe
 
-Paste a YouTube link, get a transcript. Works for **Chinese (中文)** and **English**,
-with automatic language detection. Everything runs on your own computer: the audio is
-fetched with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and transcribed with
+Paste a YouTube link. **Download** the video (MP4) or just its audio (MP3 / M4A), one
+video or a whole playlist, or **transcribe** it in **Chinese (中文)** or **English** with
+automatic language detection. Everything runs on your own computer: media is fetched
+with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and speech is transcribed with
 [Whisper](https://github.com/openai/whisper) via
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper). No API key, no cost per video.
 
 Features
 
-- Web app: paste a link, watch the progress bar, read, copy or download the transcript.
-- Output as plain text, SRT or WebVTT subtitles, or JSON with timestamps.
+- One local web app with two tabs: **Transcribe** and **Download**.
+- Transcripts as plain text, SRT or WebVTT subtitles, or JSON with timestamps.
 - Chinese output can be forced to Simplified (简体) or Traditional (繁體).
-- Queue several videos; they are transcribed one after another.
+- Downloads as MP4 up to a chosen resolution (default 1080p) or as MP3 / M4A audio.
+- Whole playlists in one go, numbered, into a folder named after the playlist.
+  A broken video does not stop the rest; failures are listed at the end.
+- Queue several jobs; downloads and transcriptions run on separate workers.
 - Command line mode for scripting and batch jobs.
-- Transcripts are also saved as files in a `transcripts` folder.
+- Files land in `downloads` and `transcripts` next to the app. `update.bat` /
+  `update.sh` pulls the latest version without touching them.
 
 ## Requirements
 
@@ -70,6 +75,30 @@ yt-transcriber                   # starts the web app
 
 Your language, script and model choices are remembered in the browser.
 
+## Downloading videos
+
+Open the **Download** tab.
+
+1. Paste a video link or a playlist link (`youtube.com/playlist?list=…`).
+   A video link that also carries `&list=` is a video *inside* a playlist: tick
+   **Download the whole playlist** to get all of it, leave it unticked for that one video.
+2. Choose **Video (MP4)** with a maximum resolution, or **Audio only** as MP3 or M4A.
+   1080p is the default: h264 MP4 that plays everywhere. "Best available" goes up to
+   4K / 8K where YouTube offers it (VP9 / AV1 video).
+3. Press **Download**. Playlists show "3/25" progress; when done you get the list of
+   files, their sizes and an **Open folder** button.
+
+Files are saved under `downloads/`; playlists get their own sub-folder named after the
+playlist, with files numbered in playlist order. Videos that are already present are
+not downloaded again, so re-running a playlist only fetches new uploads.
+
+## Updating
+
+Double-click `update.bat` (Windows) or run `./update.sh` (macOS / Linux) inside the app
+folder. It downloads the latest version from GitHub, replaces the program files, and
+reinstalls dependencies into the existing environment. Your `downloads`, `transcripts`
+and settings are untouched.
+
 ## Command line
 
 ```bash
@@ -83,11 +112,18 @@ yt-transcriber transcribe https://youtu.be/VIDEO_ID -l zh -s simplified -m large
 # Several videos in one go; print each transcript to the terminal as well
 yt-transcriber URL1 URL2 URL3 --print
 
+# Download a video as 1080p MP4 (the default), or as MP3
+yt-transcriber download https://youtu.be/VIDEO_ID
+yt-transcriber download https://youtu.be/VIDEO_ID --audio
+
+# Download a whole playlist at up to 720p into a folder of your choice
+yt-transcriber download "https://www.youtube.com/playlist?list=PL..." -q 720 -o ~/Videos
+
 # Start the web app on another port without opening a browser
 yt-transcriber serve --port 9000 --no-browser
 ```
 
-Run `yt-transcriber transcribe --help` for every option.
+Run `yt-transcriber transcribe --help` or `yt-transcriber download --help` for every option.
 
 ## Choosing a model
 
@@ -110,6 +146,7 @@ Environment variables, all optional:
 |----------------------------------------|----------------|-----------------------------------------------------------|
 | `YT_TRANSCRIBER_MODEL`                 | `small`        | Default Whisper model in the web app and CLI              |
 | `YT_TRANSCRIBER_OUTPUT_DIR`            | `transcripts`  | Where finished transcripts are saved                      |
+| `YT_TRANSCRIBER_DOWNLOAD_DIR`          | `downloads`    | Where downloaded videos and audio are saved               |
 | `YT_TRANSCRIBER_MODEL_DIR`             | HF cache       | Where downloaded Whisper models are stored                |
 | `YT_TRANSCRIBER_DEVICE`                | `auto`         | `cpu`, `cuda`, or `auto` (GPU when available)             |
 | `YT_TRANSCRIBER_COMPUTE_TYPE`          | `auto`         | `int8` on CPU, `float16` on GPU; override if needed       |
@@ -145,8 +182,13 @@ app already filters silence with VAD; trying a larger model usually fixes the re
 something fails. If it still vanishes, open PowerShell in the folder and run `.\run.bat`
 to read the message. The usual cause is Python not being installed or not on PATH.
 
-**ffmpeg not found** – Install it (see Requirements). Without it the app falls back to a
-built-in decoder that handles most but not all files.
+**ffmpeg not found** – Install it (see Requirements). Without it transcription falls back
+to a built-in decoder, video downloads are limited to 720p single-file streams, and audio
+downloads stay M4A instead of being converted to MP3.
+
+**A playlist shows "N failed"** – Those videos are private, removed, age-restricted or
+region-locked. The rest of the playlist is downloaded anyway; the failure messages are
+listed under the file list. Cookies (see above) fix the age-restricted ones.
 
 ### GPU
 
@@ -164,7 +206,8 @@ Transcribe button.
 ## How it works
 
 ```
-link ──▶ yt-dlp (best audio) ──▶ ffmpeg (16 kHz mono PCM) ──▶ faster-whisper ──▶ zhconv ──▶ txt / srt / vtt / json
+transcribe: link ──▶ yt-dlp (best audio) ──▶ ffmpeg (16 kHz mono PCM) ──▶ faster-whisper ──▶ zhconv ──▶ txt / srt / vtt / json
+download:   link ──▶ yt-dlp (video+audio streams or audio only) ──▶ ffmpeg (merge to MP4 / convert to MP3) ──▶ downloads/
 ```
 
 - `yt_transcriber/urls.py` recognises YouTube links and extracts the video id.
@@ -173,8 +216,10 @@ link ──▶ yt-dlp (best audio) ──▶ ffmpeg (16 kHz mono PCM) ──▶ 
 - `yt_transcriber/transcriber.py` loads a cached faster-whisper model and streams segments.
 - `yt_transcriber/zh.py` nudges Whisper toward the wanted Chinese script and converts the result.
 - `yt_transcriber/pipeline.py` strings these together with progress reporting.
-- `yt_transcriber/jobs.py` is a one-worker queue; `server.py` exposes it over HTTP for the
-  page in `static/index.html`; `cli.py` drives the same pipeline from the terminal.
+- `yt_transcriber/video_downloader.py` downloads videos, audio and playlists with yt-dlp,
+  turning its hooks into progress and collecting the finished files and failures.
+- `yt_transcriber/jobs.py` is a queue with one worker per job kind; `server.py` exposes it
+  over HTTP for the page in `static/index.html`; `cli.py` drives both from the terminal.
 
 ## Development
 
@@ -183,5 +228,6 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests exercise everything except the real network and model download: yt-dlp and
-Whisper are replaced with fakes, audio decoding is tested against ffmpeg-generated files.
+The tests exercise everything except YouTube itself and the model download: Whisper is
+replaced with a fake, audio decoding is tested against ffmpeg-generated files, and the
+downloader is run for real with yt-dlp against a clip served from a local HTTP server.

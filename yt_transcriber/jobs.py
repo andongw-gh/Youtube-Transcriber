@@ -1,4 +1,8 @@
-"""A small in-process job queue: one worker thread, one transcription at a time."""
+"""A small in-process job queue: one worker thread per job kind.
+
+Transcriptions are CPU-bound and downloads are network-bound, so each kind has
+its own worker and queue; within a kind, jobs run one after another.
+"""
 
 from __future__ import annotations
 
@@ -7,17 +11,21 @@ import queue
 import threading
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
-from collections.abc import Callable
 
-from .pipeline import Cancelled, StageProgress, Transcript, TranscribeOptions
+from .pipeline import Cancelled, StageProgress
 from .pipeline import run as run_pipeline
 
 log = logging.getLogger(__name__)
 
-Runner = Callable[[str, TranscribeOptions, StageProgress], Transcript]
+# A runner takes (url, options, progress) and returns a result object exposing
+# `.title`, `.summary() -> dict` and `.to_dict() -> dict`.
+Runner = Callable[[str, Any, StageProgress], Any]
+
+DEFAULT_KIND = "transcribe"
 
 
 class JobStatus(str, Enum):
@@ -36,7 +44,8 @@ class JobStatus(str, Enum):
 class Job:
     id: str
     url: str
-    options: TranscribeOptions
+    options: Any
+    kind: str = DEFAULT_KIND
     status: JobStatus = JobStatus.QUEUED
     stage: str = "queued"
     progress: float | None = 0.0
@@ -44,13 +53,14 @@ class Job:
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
-    result: Transcript | None = None
+    result: Any = None
     error: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
 
     def to_dict(self, include_result: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {
             "id": self.id,
+            "kind": self.kind,
             "url": self.url,
             "status": self.status.value,
             "stage": self.stage,
@@ -60,51 +70,63 @@ class Job:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "error": self.error,
-            "options": self.options.public_dict(),
-            "title": self.result.title if self.result else None,
-            "language": self.result.language if self.result else None,
-            "duration": self.result.duration if self.result else None,
+            "options": self.options.public_dict() if hasattr(self.options, "public_dict") else {},
+            "title": getattr(self.result, "title", None) if self.result is not None else None,
         }
+        if self.result is not None and hasattr(self.result, "summary"):
+            data.update(self.result.summary())
         if include_result and self.result is not None:
             data["result"] = self.result.to_dict()
         return data
 
 
 class JobManager:
-    """Queue transcription jobs and run them one after another on a worker thread."""
+    """Queue jobs by kind and run each kind on its own worker thread."""
 
     def __init__(
         self,
-        runner: Runner = run_pipeline,
+        runners: Mapping[str, Runner] | Runner | None = None,
         on_complete: Callable[[Job], None] | None = None,
         max_jobs: int = 200,
     ):
-        self._runner = runner
+        if runners is None:
+            runners = {DEFAULT_KIND: run_pipeline}
+        elif callable(runners):
+            runners = {DEFAULT_KIND: runners}
+        self._runners: dict[str, Runner] = dict(runners)
         self._on_complete = on_complete
         self._max_jobs = max_jobs
         self._jobs: dict[str, Job] = {}
-        self._queue: queue.Queue[str] = queue.Queue()
         self._lock = threading.Lock()
-        self._worker = threading.Thread(target=self._loop, name="yt-transcriber-worker", daemon=True)
-        self._worker.start()
+        self._queues: dict[str, queue.Queue[str]] = {kind: queue.Queue() for kind in self._runners}
+        for kind in self._runners:
+            threading.Thread(
+                target=self._loop, args=(kind,), name=f"yt-transcriber-{kind}", daemon=True
+            ).start()
 
     # -- public API -----------------------------------------------------------------
 
-    def submit(self, url: str, options: TranscribeOptions) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], url=url, options=options)
+    @property
+    def kinds(self) -> tuple[str, ...]:
+        return tuple(self._runners)
+
+    def submit(self, url: str, options: Any, kind: str = DEFAULT_KIND) -> Job:
+        if kind not in self._runners:
+            raise ValueError(f"Unknown job kind {kind!r}; expected one of {', '.join(self._runners)}")
+        job = Job(id=uuid.uuid4().hex[:12], url=url, options=options, kind=kind)
         with self._lock:
             self._jobs[job.id] = job
             self._prune_locked()
-        self._queue.put(job.id)
+        self._queues[kind].put(job.id)
         return job
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def list(self) -> list[Job]:
+    def list(self, kind: str | None = None) -> list[Job]:
         with self._lock:
-            jobs = list(self._jobs.values())
+            jobs = [job for job in self._jobs.values() if kind is None or job.kind == kind]
         return sorted(jobs, key=lambda job: job.created_at, reverse=True)
 
     def cancel(self, job_id: str) -> bool:
@@ -152,9 +174,10 @@ class JobManager:
         job.error = error
         job.finished_at = time.time()
 
-    def _loop(self) -> None:
+    def _loop(self, kind: str) -> None:
+        pending = self._queues[kind]
         while True:
-            job_id = self._queue.get()
+            job_id = pending.get()
             job = self.get(job_id)
             if job is None or job.status is not JobStatus.QUEUED:
                 continue
@@ -163,7 +186,7 @@ class JobManager:
     def _execute(self, job: Job) -> None:
         job.status = JobStatus.RUNNING
         job.started_at = time.time()
-        job.stage = "download"
+        job.stage = "resolve" if job.kind != DEFAULT_KIND else "download"
         job.progress = 0.0
         job.message = "Starting…"
 
@@ -177,7 +200,7 @@ class JobManager:
         try:
             if job.cancel_event.is_set():
                 raise Cancelled()
-            job.result = self._runner(job.url, job.options, progress)
+            job.result = self._runners[job.kind](job.url, job.options, progress)
             job.progress = 1.0
             job.stage = "done"
             job.message = "Saving…"
@@ -186,7 +209,7 @@ class JobManager:
             if self._on_complete is not None:
                 try:
                     self._on_complete(job)
-                except Exception:  # noqa: BLE001 - a failed save must not lose the transcript
+                except Exception:  # noqa: BLE001 - a failed save must not lose the result
                     log.exception("on_complete hook failed for job %s", job.id)
             self._finish(job, JobStatus.DONE, stage="done", message="Done")
         except Cancelled:

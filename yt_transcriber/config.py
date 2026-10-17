@@ -19,6 +19,7 @@ def _env(name: str, default: str | None = None) -> str | None:
 @dataclass
 class Settings:
     output_dir: Path = Path("transcripts")
+    download_dir: Path = Path("downloads")
     model_dir: Path | None = None
     default_model: str = "small"
     device: str = "auto"
@@ -38,6 +39,7 @@ class Settings:
             port = 8000
         return cls(
             output_dir=Path(_env("OUTPUT_DIR", "transcripts") or "transcripts"),
+            download_dir=Path(_env("DOWNLOAD_DIR", "downloads") or "downloads"),
             model_dir=Path(model_dir) if model_dir else None,
             default_model=_env("MODEL", "small") or "small",
             device=_env("DEVICE", "auto") or "auto",

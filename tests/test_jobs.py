@@ -22,7 +22,7 @@ def make_runner(transcript, delay=0.0, fail=False, steps=3):
 
 def test_job_runs_to_completion(sample_transcript):
     saved = []
-    manager = JobManager(runner=make_runner(sample_transcript), on_complete=saved.append)
+    manager = JobManager(runners=make_runner(sample_transcript), on_complete=saved.append)
     job = manager.submit("https://www.youtube.com/watch?v=dQw4w9WgXcQ", TranscribeOptions())
     assert job.status is JobStatus.QUEUED
     done = manager.wait(job.id, timeout=5)
@@ -37,7 +37,7 @@ def test_job_runs_to_completion(sample_transcript):
 
 
 def test_job_error_is_recorded(sample_transcript):
-    manager = JobManager(runner=make_runner(sample_transcript, fail=True))
+    manager = JobManager(runners=make_runner(sample_transcript, fail=True))
     job = manager.submit("u", TranscribeOptions())
     done = manager.wait(job.id, timeout=5)
     assert done.status is JobStatus.ERROR
@@ -54,7 +54,7 @@ def test_jobs_run_sequentially_in_order(sample_transcript):
         time.sleep(0.05)
         return sample_transcript
 
-    manager = JobManager(runner=runner)
+    manager = JobManager(runners=runner)
     jobs = [manager.submit(f"u{i}", TranscribeOptions()) for i in range(3)]
     for job in jobs:
         manager.wait(job.id, timeout=5)
@@ -69,7 +69,7 @@ def test_cancel_queued_job(sample_transcript):
         gate.wait(5)
         return sample_transcript
 
-    manager = JobManager(runner=slow_runner)
+    manager = JobManager(runners=slow_runner)
     first = manager.submit("first", TranscribeOptions())
     second = manager.submit("second", TranscribeOptions())
     time.sleep(0.05)
@@ -91,7 +91,7 @@ def test_cancel_running_job_stops_at_next_progress(sample_transcript):
         progress("download", 0.5, "still going")  # raises Cancelled
         raise AssertionError("should not get here")
 
-    manager = JobManager(runner=runner)
+    manager = JobManager(runners=runner)
     job = manager.submit("u", TranscribeOptions())
     assert started.wait(5)
     assert manager.cancel(job.id) is True
@@ -103,7 +103,7 @@ def test_cancel_running_job_stops_at_next_progress(sample_transcript):
 
 
 def test_unknown_job(sample_transcript):
-    manager = JobManager(runner=make_runner(sample_transcript))
+    manager = JobManager(runners=make_runner(sample_transcript))
     assert manager.get("nope") is None
     assert manager.cancel("nope") is False
     with pytest.raises(KeyError):
@@ -111,7 +111,7 @@ def test_unknown_job(sample_transcript):
 
 
 def test_prunes_old_finished_jobs(sample_transcript):
-    manager = JobManager(runner=make_runner(sample_transcript), max_jobs=2)
+    manager = JobManager(runners=make_runner(sample_transcript), max_jobs=2)
     ids = []
     for i in range(4):
         job = manager.submit(f"u{i}", TranscribeOptions())
@@ -128,7 +128,7 @@ def test_on_complete_runs_before_job_is_marked_done(sample_transcript):
     def hook(job):
         seen.append(job.status)
 
-    manager = JobManager(runner=make_runner(sample_transcript), on_complete=hook)
+    manager = JobManager(runners=make_runner(sample_transcript), on_complete=hook)
     job = manager.submit("u", TranscribeOptions())
     done = manager.wait(job.id, timeout=5)
     assert seen == [JobStatus.RUNNING]
@@ -139,8 +139,34 @@ def test_failing_on_complete_does_not_fail_job(sample_transcript):
     def hook(job):
         raise OSError("disk full")
 
-    manager = JobManager(runner=make_runner(sample_transcript), on_complete=hook)
+    manager = JobManager(runners=make_runner(sample_transcript), on_complete=hook)
     job = manager.submit("u", TranscribeOptions())
     done = manager.wait(job.id, timeout=5)
     assert done.status is JobStatus.DONE
     assert done.result is sample_transcript
+
+
+def test_kinds_run_on_separate_workers(sample_transcript):
+    gate = threading.Event()
+
+    def slow(url, options, progress):
+        gate.wait(5)
+        return sample_transcript
+
+    def fast(url, options, progress):
+        return sample_transcript
+
+    manager = JobManager(runners={"transcribe": slow, "download": fast})
+    assert manager.kinds == ("transcribe", "download")
+    first = manager.submit("a", TranscribeOptions(), kind="transcribe")
+    second = manager.submit("b", TranscribeOptions(), kind="download")
+    assert manager.wait(second.id, timeout=5).status is JobStatus.DONE  # not blocked by the transcription
+    assert first.status is JobStatus.RUNNING
+    gate.set()
+    assert manager.wait(first.id, timeout=5).status is JobStatus.DONE
+    assert [job.id for job in manager.list("download")] == [second.id]
+    assert [job.id for job in manager.list()] == [second.id, first.id]
+    assert second.to_dict()["kind"] == "download"
+    assert second.to_dict()["language"] == "en"  # summary() fields are merged in
+    with pytest.raises(ValueError):
+        manager.submit("c", TranscribeOptions(), kind="nope")

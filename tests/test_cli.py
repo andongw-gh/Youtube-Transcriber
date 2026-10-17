@@ -4,6 +4,7 @@ import pytest
 
 import yt_transcriber.cli as cli
 from yt_transcriber.downloader import DownloadError
+from yt_transcriber.video_downloader import DownloadResult, DownloadedItem
 
 
 def test_bare_url_is_transcribe(monkeypatch, sample_transcript, tmp_path, capsys):
@@ -86,3 +87,37 @@ def test_console_progress_prints_stage_changes():
     assert "Downloading" in text and "50.0%" in text
     assert "Transcribing" in text and "25.0%" in text
     assert text.count("\n") == 2
+
+
+def test_download_command(monkeypatch, tmp_path, capsys):
+    calls = []
+
+    def fake_download(url, options, progress=None):
+        calls.append((url, options))
+        progress("download", 0.5, "half")
+        path = tmp_path / "Vid [dQw4w9WgXcQ].mp4"
+        path.write_bytes(b"abc")
+        return DownloadResult(title="Vid", url=url, kind="video", output_dir=str(tmp_path), mode=options.mode,
+                              quality=options.quality, audio_format=options.audio_format,
+                              items=[DownloadedItem(title="Vid", path=str(path), size_bytes=3)],
+                              failures=[], warnings=["note one"])
+
+    monkeypatch.setattr(cli, "run_download", fake_download)
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+    code = cli.main(["download", url, "-a", "--audio-format", "m4a", "-o", str(tmp_path)])
+    assert code == 0
+    assert calls[0][0] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # no --playlist: just the video
+    assert calls[0][1].mode == "audio" and calls[0][1].audio_format == "m4a"
+    assert calls[0][1].output_dir == str(tmp_path)
+    out = capsys.readouterr().out
+    assert "part of a playlist" in out and "Vid" in out and "Vid [dQw4w9WgXcQ].mp4" in out and "note one" in out
+
+    code = cli.main(["download", url, "--playlist", "-q", "720", "-o", str(tmp_path)])
+    assert code == 0
+    assert calls[1][0] == "https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+    assert calls[1][1].mode == "video" and calls[1][1].quality == "720"
+
+
+def test_download_command_bad_link(tmp_path, capsys):
+    assert cli.main(["download", "https://example.com", "-o", str(tmp_path)]) == 1
+    assert "Not a YouTube" in capsys.readouterr().err
